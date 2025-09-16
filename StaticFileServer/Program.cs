@@ -165,4 +165,57 @@ app.MapFallback(async ctx =>
     }
 });
 
+// ヘルスチェック (疎通確認用)
+app.MapGet("/healthz", () =>
+{
+    return Results.Ok(new
+    {
+        status = "ok",
+        timestamp = DateTimeOffset.UtcNow
+    });
+});
+
+// レディネスチェック (依存リソース確認用)
+app.MapGet("/readyz", () =>
+{
+    var checks = new Dictionary<string, object>();
+
+    // 1) 静的ファイルフォルダの存在確認（外側の distPath をそのまま使う）
+    checks["staticFiles"] = Directory.Exists(distPath);
+
+    // 2) Logs フォルダ書き込み可能か確認
+    try
+    {
+        var logPath = Path.Combine(AppContext.BaseDirectory, "Logs", "write-test.txt");
+        File.WriteAllText(logPath, DateTime.UtcNow.ToString("O"));
+        File.Delete(logPath);
+        checks["logWritable"] = true;
+    }
+    catch
+    {
+        checks["logWritable"] = false;
+    }
+
+    var allOk = checks.Values.All(v => v is bool b && b);
+
+    if (allOk)
+    {
+        return Results.Ok(new
+        {
+            status = "ready",
+            timestamp = DateTimeOffset.UtcNow,
+            checks
+        });
+    }
+    else
+    {
+        return Results.Json(new
+        {
+            status = "not-ready",
+            timestamp = DateTimeOffset.UtcNow,
+            checks
+        }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
 app.Run();
