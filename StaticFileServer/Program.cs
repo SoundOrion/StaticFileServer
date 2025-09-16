@@ -78,6 +78,19 @@ builder.Services.AddHttpLogging(logging =>
 
 var app = builder.Build();
 
+// クライアント IP ログ Middleware
+app.Use(async (context, next) =>
+{
+    var ip = context.Connection.RemoteIpAddress?.ToString();
+    var method = context.Request.Method;
+    var path = context.Request.Path;
+
+    // Serilog に出力
+    Log.Information("Client {IP} {Method} {Path}", ip, method, path);
+
+    await next.Invoke();
+});
+
 // 1) アクセスログを出す（最初に）
 app.UseHttpLogging();
 
