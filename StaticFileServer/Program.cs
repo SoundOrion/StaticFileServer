@@ -18,6 +18,13 @@ Log.Logger = new LoggerConfiguration()
 
 var builder = WebApplication.CreateBuilder(args);
 
+// 設定読み込み
+var useHttps = builder.Configuration.GetValue("Hosting:UseHttps", false);
+var httpPort = builder.Configuration.GetValue("Hosting:HttpPort", 8080);
+var httpsPort = builder.Configuration.GetValue("Hosting:HttpsPort", 8443);
+var certPath = builder.Configuration.GetValue<string>("Hosting:Certificate:Path");
+var certPassword = builder.Configuration.GetValue<string>("Hosting:Certificate:Password");
+
 // Windows サービスとして動く場合の設定
 if (WindowsServiceHelpers.IsWindowsService())
 {
@@ -32,7 +39,23 @@ if (WindowsServiceHelpers.IsWindowsService())
 
 // appsettings.json の Kestrel セクションが自動で反映される
 // builder.WebHost.ConfigureKestrel(...) を空で呼ぶだけでも可
-builder.WebHost.ConfigureKestrel(_ => { });
+//builder.WebHost.ConfigureKestrel(_ => { });
+builder.WebHost.ConfigureKestrel(options =>
+{
+    if (useHttps && !string.IsNullOrEmpty(certPath) && File.Exists(certPath))
+    {
+        // HTTPS 設定
+        options.ListenAnyIP(httpsPort, listenOpts =>
+        {
+            listenOpts.UseHttps(certPath, certPassword);
+        });
+    }
+    else
+    {
+        // HTTP 設定
+        options.ListenAnyIP(httpPort);
+    }
+});
 
 // 2) 既存ロガーを Serilog に差し替え
 builder.Host.UseSerilog();
