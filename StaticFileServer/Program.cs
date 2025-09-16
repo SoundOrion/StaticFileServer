@@ -1,20 +1,32 @@
-using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting.WindowsServices;
 using Serilog;
 
 // 1) Serilog の初期化
 Log.Logger = new LoggerConfiguration()
     .Enrich.FromLogContext()
     .WriteTo.Console()                         // コンソール
-    .WriteTo.File("Logs/app-.log",             // ファイル（Rolling 日別）
+    .WriteTo.File(Path.Combine(AppContext.BaseDirectory, "Logs", "app-.log"),             // ファイル（Rolling 日別）
         rollingInterval: RollingInterval.Day,
         retainedFileCountLimit: 7)             // 7日分残す
     .CreateLogger();
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Windows サービスとして動く場合の設定
+if (WindowsServiceHelpers.IsWindowsService())
+{
+    builder.Host.UseWindowsService(options =>
+    {
+        options.ServiceName = "MinimalStaticFileServer"; // 好きなサービス名
+    });
+
+    // サービス実行時は作業ディレクトリが system32 になることが多いので、
+    // 何か相対パスを使うなら AppContext.BaseDirectory を使うのが吉
+}
 
 // appsettings.json の Kestrel セクションが自動で反映される
 // builder.WebHost.ConfigureKestrel(...) を空で呼ぶだけでも可
