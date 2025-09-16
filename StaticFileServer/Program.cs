@@ -6,6 +6,8 @@ using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting.WindowsServices;
 using Serilog;
+using StaticFileServer;
+using System.Security.Cryptography.X509Certificates;
 
 // 1) Serilog の初期化
 Log.Logger = new LoggerConfiguration()
@@ -22,8 +24,8 @@ var builder = WebApplication.CreateBuilder(args);
 var useHttps = builder.Configuration.GetValue("Hosting:UseHttps", false);
 var httpPort = builder.Configuration.GetValue("Hosting:HttpPort", 8080);
 var httpsPort = builder.Configuration.GetValue("Hosting:HttpsPort", 8443);
-var certPath = builder.Configuration.GetValue<string>("Hosting:Certificate:Path");
-var certPassword = builder.Configuration.GetValue<string>("Hosting:Certificate:Password");
+var crtPath = builder.Configuration.GetValue<string>("Hosting:Certificate:CrtPath");
+var keyPath = builder.Configuration.GetValue<string>("Hosting:Certificate:KeyPath");
 
 // Windows サービスとして動く場合の設定
 if (WindowsServiceHelpers.IsWindowsService())
@@ -42,17 +44,21 @@ if (WindowsServiceHelpers.IsWindowsService())
 //builder.WebHost.ConfigureKestrel(_ => { });
 builder.WebHost.ConfigureKestrel(options =>
 {
-    if (useHttps && !string.IsNullOrEmpty(certPath) && File.Exists(certPath))
+    if (useHttps && !string.IsNullOrEmpty(crtPath) && !string.IsNullOrEmpty(keyPath)
+        && File.Exists(crtPath) && File.Exists(keyPath))
     {
-        // HTTPS 設定
+        // .crt / .key を読み込んで X509Certificate2 を生成
+        var cert = X509Certificate2.CreateFromPemFile(crtPath, keyPath);
+        cert = new X509Certificate2(cert.Export(X509ContentType.Pfx));
+
         options.ListenAnyIP(httpsPort, listenOpts =>
         {
-            listenOpts.UseHttps(certPath, certPassword);
+            listenOpts.UseHttps(cert);
         });
     }
     else
     {
-        // HTTP 設定
+        // fallback to HTTP
         options.ListenAnyIP(httpPort);
     }
 });
