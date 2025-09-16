@@ -1,51 +1,53 @@
+ï»¿using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.HttpLogging;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting.WindowsServices;
 using Serilog;
 
-// 1) Serilog ‚Ì‰Šú‰»
+// 1) Serilog ã®åˆæœŸåŒ–
 Log.Logger = new LoggerConfiguration()
     .Enrich.FromLogContext()
-    .WriteTo.Console()                         // ƒRƒ“ƒ\[ƒ‹
-    .WriteTo.File(Path.Combine(AppContext.BaseDirectory, "Logs", "app-.log"),             // ƒtƒ@ƒCƒ‹iRolling “ú•Êj
+    .WriteTo.Console()                         // ã‚³ãƒ³ã‚½ãƒ¼ãƒ«
+    .WriteTo.File(Path.Combine(AppContext.BaseDirectory, "Logs", "app-.log"),             // ãƒ•ã‚¡ã‚¤ãƒ«ï¼ˆRolling æ—¥åˆ¥ï¼‰
         rollingInterval: RollingInterval.Day,
-        retainedFileCountLimit: 7)             // 7“ú•ªc‚·
+        retainedFileCountLimit: 7)             // 7æ—¥åˆ†æ®‹ã™
     .CreateLogger();
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Windows ƒT[ƒrƒX‚Æ‚µ‚Ä“®‚­ê‡‚Ìİ’è
+// Windows ã‚µãƒ¼ãƒ“ã‚¹ã¨ã—ã¦å‹•ãå ´åˆã®è¨­å®š
 if (WindowsServiceHelpers.IsWindowsService())
 {
     builder.Host.UseWindowsService(options =>
     {
-        options.ServiceName = "MinimalStaticFileServer"; // D‚«‚ÈƒT[ƒrƒX–¼
+        options.ServiceName = "MinimalStaticFileServer"; // å¥½ããªã‚µãƒ¼ãƒ“ã‚¹å
     });
 
-    // ƒT[ƒrƒXÀs‚Íì‹ÆƒfƒBƒŒƒNƒgƒŠ‚ª system32 ‚É‚È‚é‚±‚Æ‚ª‘½‚¢‚Ì‚ÅA
-    // ‰½‚©‘Š‘ÎƒpƒX‚ğg‚¤‚È‚ç AppContext.BaseDirectory ‚ğg‚¤‚Ì‚ª‹g
+    // ã‚µãƒ¼ãƒ“ã‚¹å®Ÿè¡Œæ™‚ã¯ä½œæ¥­ãƒ‡ã‚£ãƒ¬ã‚¯ãƒˆãƒªãŒ system32 ã«ãªã‚‹ã“ã¨ãŒå¤šã„ã®ã§ã€
+    // ä½•ã‹ç›¸å¯¾ãƒ‘ã‚¹ã‚’ä½¿ã†ãªã‚‰ AppContext.BaseDirectory ã‚’ä½¿ã†ã®ãŒå‰
 }
 
-// appsettings.json ‚Ì Kestrel ƒZƒNƒVƒ‡ƒ“‚ª©“®‚Å”½‰f‚³‚ê‚é
-// builder.WebHost.ConfigureKestrel(...) ‚ğ‹ó‚ÅŒÄ‚Ô‚¾‚¯‚Å‚à‰Â
+// appsettings.json ã® Kestrel ã‚»ã‚¯ã‚·ãƒ§ãƒ³ãŒè‡ªå‹•ã§åæ˜ ã•ã‚Œã‚‹
+// builder.WebHost.ConfigureKestrel(...) ã‚’ç©ºã§å‘¼ã¶ã ã‘ã§ã‚‚å¯
 builder.WebHost.ConfigureKestrel(_ => { });
 
-// 2) Šù‘¶ƒƒK[‚ğ Serilog ‚É·‚µ‘Ö‚¦
+// 2) æ—¢å­˜ãƒ­ã‚¬ãƒ¼ã‚’ Serilog ã«å·®ã—æ›¿ãˆ
 builder.Host.UseSerilog();
 
-// ˆ³k‚ğ—LŒø‰»
+// åœ§ç¸®ã‚’æœ‰åŠ¹åŒ–
 builder.Services.AddResponseCompression(options =>
 {
-    options.EnableForHttps = true; // HTTPS‚Å‚à—LŒø
+    options.EnableForHttps = true; // HTTPSã§ã‚‚æœ‰åŠ¹
     options.Providers.Add<BrotliCompressionProvider>();
     options.Providers.Add<GzipCompressionProvider>();
 });
 
 builder.Services.AddHttpLogging(logging =>
 {
-    // ƒƒO‚É‰½‚ğo‚·‚©§Œä‚Å‚«‚éi•K—v‚É‰‚¶‚Äi‚éj
+    // ãƒ­ã‚°ã«ä½•ã‚’å‡ºã™ã‹åˆ¶å¾¡ã§ãã‚‹ï¼ˆå¿…è¦ã«å¿œã˜ã¦çµã‚‹ï¼‰
     logging.LoggingFields = HttpLoggingFields.RequestPath |
                             HttpLoggingFields.RequestMethod |
                             HttpLoggingFields.ResponseStatusCode;
@@ -53,21 +55,67 @@ builder.Services.AddHttpLogging(logging =>
 
 var app = builder.Build();
 
-// 1) ƒAƒNƒZƒXƒƒO‚ğo‚·iÅ‰‚Éj
+// 1) ã‚¢ã‚¯ã‚»ã‚¹ãƒ­ã‚°ã‚’å‡ºã™ï¼ˆæœ€åˆã«ï¼‰
 app.UseHttpLogging();
 
-// 2) ˆ³k‚ğ—LŒø‰»
+// 2) åœ§ç¸®ã‚’æœ‰åŠ¹åŒ–
 app.UseResponseCompression();
 
-// ŒöŠJ‚·‚éƒtƒHƒ‹ƒ_i—á: build/ ‚Ü‚½‚Í dist/j
+// â¶ ä¾‹å¤–ãƒãƒ³ãƒ‰ãƒ©ï¼ˆã§ãã‚Œã°æœ€åˆã®ä¸­é–“å±¤ã®ã»ã†ã«ç½®ãï¼‰
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async ctx =>
+    {
+        var exFeature = ctx.Features.Get<IExceptionHandlerPathFeature>();
+        var ex = exFeature?.Error;
+
+        // ãƒ­ã‚°ï¼ˆSerilog ã‚’æ—¢ã«ä½¿ã£ã¦ã„ã‚‹å‰æï¼‰
+        Serilog.Log.Error(ex, "Unhandled exception at {Path}", exFeature?.Path);
+
+        ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
+
+        // ã‚­ãƒ£ãƒƒã‚·ãƒ¥ã•ã›ãªã„
+        ctx.Response.Headers["Cache-Control"] = "no-store";
+        ctx.Response.Headers["Pragma"] = "no-cache";
+
+        // Accept ãƒ˜ãƒƒãƒ€ã§å¿œç­”ãƒ•ã‚©ãƒ¼ãƒãƒƒãƒˆã‚’åˆ‡æ›¿
+        var accept = ctx.Request.GetTypedHeaders().Accept;
+        var wantsHtml = accept?.Any(a => a.MediaType.HasValue &&
+                                         a.MediaType.Value.Contains("text/html", StringComparison.OrdinalIgnoreCase)) == true;
+
+        // â· HTML: build/500.html ãŒã‚ã‚Œã°ãã‚Œã‚’è¿”ã™
+        var distPath = Path.Combine(AppContext.BaseDirectory, "build");
+        var errorHtml = Path.Combine(distPath, "500.html");
+
+        if (wantsHtml && File.Exists(errorHtml))
+        {
+            ctx.Response.ContentType = "text/html; charset=utf-8";
+            await ctx.Response.SendFileAsync(errorHtml);
+            return;
+        }
+
+        // â¸ JSONï¼ˆProblemDetailsï¼‰
+        ctx.Response.ContentType = "application/problem+json; charset=utf-8";
+        var problem = new ProblemDetails
+        {
+            Title = "Internal Server Error",
+            Status = StatusCodes.Status500InternalServerError,
+            Detail = "An unexpected error occurred.",
+            Instance = exFeature?.Path
+        };
+        await ctx.Response.WriteAsJsonAsync(problem);
+    });
+});
+
+// å…¬é–‹ã™ã‚‹ãƒ•ã‚©ãƒ«ãƒ€ï¼ˆä¾‹: build/ ã¾ãŸã¯ dist/ï¼‰
 var distPath = Path.Combine(AppContext.BaseDirectory, "build");
 var provider = new PhysicalFileProvider(distPath);
 
-// MIME Šg’£ (—á: .wasm)
+// MIME æ‹¡å¼µ (ä¾‹: .wasm)
 var contentTypeProvider = new FileExtensionContentTypeProvider();
 contentTypeProvider.Mappings[".wasm"] = "application/wasm";
 
-// /assets ˆÈ‰º‚Í’·ŠúƒLƒƒƒbƒVƒ… (1”N, immutable)
+// /assets ä»¥ä¸‹ã¯é•·æœŸã‚­ãƒ£ãƒƒã‚·ãƒ¥ (1å¹´, immutable)
 app.UseWhen(ctx => ctx.Request.Path.StartsWithSegments("/assets"), branch =>
 {
     branch.UseStaticFiles(new StaticFileOptions
@@ -82,7 +130,7 @@ app.UseWhen(ctx => ctx.Request.Path.StartsWithSegments("/assets"), branch =>
     });
 });
 
-// ‚»‚êˆÈŠO‚ÌÃ“Iƒtƒ@ƒCƒ‹
+// ãã‚Œä»¥å¤–ã®é™çš„ãƒ•ã‚¡ã‚¤ãƒ«
 app.UseStaticFiles(new StaticFileOptions
 {
     FileProvider = provider,
@@ -101,7 +149,7 @@ app.UseStaticFiles(new StaticFileOptions
     }
 });
 
-// 404: ‘¶İ‚µ‚È‚¢URL‚Í build/404.html ‚ğ•Ô‚·
+// 404: å­˜åœ¨ã—ãªã„URLã¯ build/404.html ã‚’è¿”ã™
 app.MapFallback(async ctx =>
 {
     var notfound = Path.Combine(distPath, "404.html");
