@@ -220,18 +220,6 @@ try
         });
     });
 
-    // ---------------------------
-    // 10) Serilog リクエストログ（処理時間など）
-    // ---------------------------
-    app.UseSerilogRequestLogging(opts =>
-    {
-        opts.GetLevel = (httpCtx, elapsed, ex) =>
-            ex is not null || httpCtx.Response.StatusCode >= 500
-                ? Serilog.Events.LogEventLevel.Error
-                : Serilog.Events.LogEventLevel.Information;
-        // 既定テンプレートでメソッド/パス/ステータス/処理時間などを出力
-    });
-
     // 逆プロキシヘッダ適用
     app.UseForwardedHeaders();
 
@@ -241,6 +229,38 @@ try
         app.UseHsts();
         app.UseHttpsRedirection();
     }
+
+    // ---------------------------
+    // 10) Serilog リクエストログ（処理時間など）
+    // ---------------------------
+    app.UseSerilogRequestLogging(opts =>
+    {
+        opts.GetLevel = (httpCtx, elapsed, ex) =>
+            ex is not null || httpCtx.Response.StatusCode >= 500
+                ? Serilog.Events.LogEventLevel.Error
+                : Serilog.Events.LogEventLevel.Information;
+
+        // ↓ ヘルスチェックなどを Information ではなく Verbose に落とす例（もしくは null で抑止）
+        opts.GetLevel = (ctx, elapsed, ex) =>
+        {
+            var path = ctx.Request.Path.Value ?? "";
+            if (path.StartsWith("/healthz") || path.StartsWith("/readyz") || path.StartsWith("/assets"))
+                return Serilog.Events.LogEventLevel.Verbose;
+            return (ex is not null || ctx.Response.StatusCode >= 500)
+                ? Serilog.Events.LogEventLevel.Error
+                : Serilog.Events.LogEventLevel.Information;
+        };
+
+        opts.MessageTemplate =
+            "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms from {RemoteIpAddress}";
+
+        opts.EnrichDiagnosticContext = (diagCtx, httpCtx) =>
+        {
+            var ip = httpCtx.Connection.RemoteIpAddress;
+            if (ip?.IsIPv4MappedToIPv6 == true) ip = ip.MapToIPv4(); // 任意：IPv4 正規化
+            diagCtx.Set("RemoteIpAddress", ip?.ToString());
+        };
+    });
 
     // HTTP ログ（必要なら）
     app.UseHttpLogging();
