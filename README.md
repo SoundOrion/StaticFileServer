@@ -96,19 +96,6 @@ Start-Service MinimalStaticFileServer
 違いは「コマンド体系が cmd か PowerShell か」という程度。
 
 ---
-
-## 1. スクリプトを保存
-
-1. メモ帳などにスクリプト全文をコピーして貼り付ける
-2. `Manage-StaticFileServer.ps1` などの名前で保存する
-
-例:
-
-```
-C:\scripts\Manage-StaticFileServer.ps1
-```
-
----
 # スクリプト
 
 ## 1. PowerShell で読み込む
