@@ -157,6 +157,12 @@ var provider = new PhysicalFileProvider(distPath);
 var contentTypeProvider = new FileExtensionContentTypeProvider();
 contentTypeProvider.Mappings[".wasm"] = "application/wasm";
 
+// UTF-8 で表示させたいテキスト系
+contentTypeProvider.Mappings[".txt"] = "text/plain; charset=utf-8";
+contentTypeProvider.Mappings[".log"] = "text/plain; charset=utf-8";
+contentTypeProvider.Mappings[".csv"] = "text/csv; charset=utf-8";
+contentTypeProvider.Mappings[".json"] = "application/json; charset=utf-8";
+
 // /assets 以下は長期キャッシュ (1年, immutable)
 app.UseWhen(ctx => ctx.Request.Path.StartsWithSegments("/assets"), branch =>
 {
