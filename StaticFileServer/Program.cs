@@ -1,4 +1,6 @@
-﻿using Microsoft.AspNetCore.Diagnostics;
+﻿using Microsoft.AspNetCore.Authentication.Negotiate;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
@@ -174,10 +176,28 @@ try
                 }));
     });
 
+    // ---------------------------
+    // 9) Windows 認証（Negotiate）＋ 認可
+    // ---------------------------
+    builder.Services
+        .AddAuthentication(NegotiateDefaults.AuthenticationScheme)
+        .AddNegotiate();
+
+    builder.Services.AddAuthorization(options =>
+    {
+        // 既定は「認証必須」
+        options.FallbackPolicy = new AuthorizationPolicyBuilder()
+            .RequireAuthenticatedUser()
+            .Build();
+
+        // 匿名を許すポリシー（ヘルスチェック等で使用）
+        options.AddPolicy("AllowAnonymous", p => p.RequireAssertion(_ => true));
+    });
+
     var app = builder.Build();
 
     // ---------------------------
-    // 9) 例外ハンドラ（最上流）
+    // 10) 例外ハンドラ（最上流）
     // ---------------------------
     app.UseExceptionHandler(errorApp =>
     {
@@ -231,34 +251,42 @@ try
     }
 
     // ---------------------------
-    // 10) Serilog リクエストログ（処理時間など）
+    // 11) 認証/認可（ユーザー名をログに入れるため Serilog より前に）
+    // ---------------------------
+    app.UseAuthentication();
+    app.UseAuthorization();
+
+    // ---------------------------
+    // 12) Serilog リクエストログ（処理時間など）
     // ---------------------------
     app.UseSerilogRequestLogging(opts =>
     {
-        opts.GetLevel = (httpCtx, elapsed, ex) =>
-            ex is not null || httpCtx.Response.StatusCode >= 500
-                ? Serilog.Events.LogEventLevel.Error
-                : Serilog.Events.LogEventLevel.Information;
-
-        // ↓ ヘルスチェックなどを Information ではなく Verbose に落とす例（もしくは null で抑止）
+        // 低頻度にしたいパスを減衰（ヘルスやアセット）
         opts.GetLevel = (ctx, elapsed, ex) =>
         {
             var path = ctx.Request.Path.Value ?? "";
             if (path.StartsWith("/healthz") || path.StartsWith("/readyz") || path.StartsWith("/assets"))
                 return Serilog.Events.LogEventLevel.Verbose;
+
             return (ex is not null || ctx.Response.StatusCode >= 500)
                 ? Serilog.Events.LogEventLevel.Error
                 : Serilog.Events.LogEventLevel.Information;
         };
 
         opts.MessageTemplate =
-            "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms from {RemoteIpAddress}";
+            "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms from {RemoteIpAddress} (User={UserName})";
 
+        // ユーザー名/クライアント IP をログに埋め込む
         opts.EnrichDiagnosticContext = (diagCtx, httpCtx) =>
         {
             var ip = httpCtx.Connection.RemoteIpAddress;
-            if (ip?.IsIPv4MappedToIPv6 == true) ip = ip.MapToIPv4(); // 任意：IPv4 正規化
+            if (ip?.IsIPv4MappedToIPv6 == true) ip = ip.MapToIPv4();
             diagCtx.Set("RemoteIpAddress", ip?.ToString());
+
+            var userName = (httpCtx.User?.Identity?.IsAuthenticated == true)
+                ? httpCtx.User!.Identity!.Name // 例: "CORP\\yamada"
+                : "anonymous";
+            diagCtx.Set("UserName", userName);
         };
     });
 
@@ -272,7 +300,7 @@ try
     app.UseRateLimiter();
 
     // ---------------------------
-    // 11) 静的ファイル設定
+    // 13) 静的ファイル設定
     // ---------------------------
     var distPath = Path.Combine(AppContext.BaseDirectory, "build");
     var provider = new PhysicalFileProvider(distPath);
@@ -327,7 +355,7 @@ try
     });
 
     // ---------------------------
-    // 12) Fallback（404.html を返す）
+    // 14) Fallback（404.html を返す）
     // ---------------------------
     app.MapFallback(async ctx =>
     {
@@ -345,23 +373,24 @@ try
     });
 
     // ---------------------------
-    // 13) ヘルス/レディネス
+    // 15) ヘルス/レディネス（匿名許可）
     // ---------------------------
-    app.MapGet("/healthz", () =>
+    app.MapGet("/healthz", [AllowAnonymous] () =>
     {
         return Results.Ok(new
         {
             status = "ok",
             timestamp = DateTimeOffset.UtcNow
         });
-    });
+    }).RequireAuthorization("AllowAnonymous");
 
-    app.MapGet("/readyz", () =>
+    app.MapGet("/readyz", [AllowAnonymous] () =>
     {
         var checks = new Dictionary<string, object>();
 
         // 静的ファイルフォルダの存在
-        checks["staticFiles"] = Directory.Exists(distPath);
+        var distPathLocal = Path.Combine(AppContext.BaseDirectory, "build");
+        checks["staticFiles"] = Directory.Exists(distPathLocal);
 
         // Logs フォルダ書込可
         try
@@ -415,7 +444,7 @@ try
                 checks
             }, statusCode: StatusCodes.Status503ServiceUnavailable);
         }
-    });
+    }).RequireAuthorization("AllowAnonymous");
 
     // 任意：バージョン表示（デプロイ確認に）
     app.MapGet("/version", () =>
