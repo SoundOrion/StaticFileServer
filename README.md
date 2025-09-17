@@ -96,3 +96,99 @@ Start-Service MinimalStaticFileServer
 違いは「コマンド体系が cmd か PowerShell か」という程度。
 
 ---
+
+## 1. スクリプトを保存
+
+1. メモ帳などにスクリプト全文をコピーして貼り付ける
+2. `Manage-StaticFileServer.ps1` などの名前で保存する
+
+例:
+
+```
+C:\scripts\Manage-StaticFileServer.ps1
+```
+
+---
+# スクリプト
+
+## 1. PowerShell で読み込む
+
+管理者権限で PowerShell を開き、次のように読み込みます：
+
+```powershell
+. "C:\scripts\Manage-StaticFileServer.ps1"
+```
+
+※ 頭の `.`（ドット）＋スペースを忘れないでください。
+これで、そのセッション内に `Register-StaticFileServerService` と `Unregister-StaticFileServerService` 関数が使えるようになります。
+
+---
+
+## 2. サービス登録（作成）
+
+### 最低限の例
+
+```powershell
+Register-StaticFileServerService -BinaryPath "C:\apps\MinimalStaticFileServer\MinimalStaticFileServer.exe"
+```
+
+* `-BinaryPath` : 実行ファイル（ビルドした ASP.NET Core サーバーの exe）のフルパス
+
+### 引数や表示名を付ける例
+
+```powershell
+Register-StaticFileServerService `
+  -BinaryPath "C:\apps\MinimalStaticFileServer\MinimalStaticFileServer.exe" `
+  -Arguments '--urls "http://*:8080"' `
+  -DisplayName "Minimal Static File Server" `
+  -Description "ASP.NET Core static file server (Negotiate auth for logging only)" `
+  -StartupType Automatic `
+  -Force
+```
+
+* `-Arguments` : `--urls` など Kestrel の起動引数を渡せる
+* `-DisplayName` : サービス管理画面（services.msc）に表示される名前
+* `-Description` : サービスの説明
+* `-StartupType` : 自動起動 (`Automatic`)、手動 (`Manual`)、無効 (`Disabled`)
+* `-Force` : 既に同名サービスがあれば削除して作り直す
+
+---
+
+## 3. サービス削除
+
+登録したサービスを削除するときは：
+
+```powershell
+Unregister-StaticFileServerService
+```
+
+必要なら名前を変えて削除できます：
+
+```powershell
+Unregister-StaticFileServerService -Name "MinimalStaticFileServer"
+```
+
+---
+
+## 4. 動作確認
+
+サービスの状態を見るには：
+
+```powershell
+Get-Service -Name "MinimalStaticFileServer"
+```
+
+開始・停止は普通に PowerShell のコマンドでできます：
+
+```powershell
+Start-Service -Name "MinimalStaticFileServer"
+Stop-Service  -Name "MinimalStaticFileServer"
+```
+
+---
+
+✅ まとめると：
+
+1. スクリプトを保存 → 読み込み
+2. `Register-StaticFileServerService` でサービス登録
+3. 不要になったら `Unregister-StaticFileServerService` で削除
