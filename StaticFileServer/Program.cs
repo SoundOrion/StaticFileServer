@@ -185,9 +185,14 @@ try
 
     builder.Services.AddAuthorization(options =>
     {
-        // 既定は「認証必須」
+        //// 既定は「認証必須」
+        //options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        //    .RequireAuthenticatedUser()
+        //    .Build();
+
+        // 既定は「常に許可」
         options.FallbackPolicy = new AuthorizationPolicyBuilder()
-            .RequireAuthenticatedUser()
+            .RequireAssertion(_ => true)
             .Build();
 
         // 匿名を許すポリシー（ヘルスチェック等で使用）
