@@ -1,25 +1,30 @@
 ﻿using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
+using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 
 namespace StaticFileServer;
 
-public static class ListenOptionsPemExtensions
+public static class CertificateExtensions
 {
     /// <summary>
-    /// Kestrel に .crt/.key (PEM) ファイルから証明書を読み込ませる。
+    /// PEM (crt/key) から証明書を読み込み、エフェメラルキーで再インポートします。
     /// </summary>
-    /// <param name="listenOptions">対象の ListenOptions</param>
-    /// <param name="certPemPath">証明書ファイル (.crt or .pem)</param>
-    /// <param name="keyPemPath">秘密鍵ファイル (.key)</param>
-    /// <returns></returns>
-    public static ListenOptions UseHttpsFromPem(this ListenOptions listenOptions, string certPemPath, string keyPemPath)
+    public static X509Certificate2 LoadEphemeralFromPem(string certPemPath, string keyPemPath)
     {
-        // .NET 6+ なら CreateFromPemFile が使える
-        var cert = X509Certificate2.CreateFromPemFile(certPemPath, keyPemPath);
-
-        // 秘密鍵付きに変換 (.pfx形式に一時エクスポート → 再インポート)
-        cert = new X509Certificate2(cert.Export(X509ContentType.Pfx));
-
-        return listenOptions.UseHttps(cert);
+        var fromPem = X509Certificate2.CreateFromPemFile(certPemPath, keyPemPath);
+        byte[] pfx = fromPem.Export(X509ContentType.Pfx);
+        try
+        {
+            return new X509Certificate2(
+            pfx,
+            (string?)null,
+            X509KeyStorageFlags.EphemeralKeySet | X509KeyStorageFlags.MachineKeySet
+            );
+        }
+        finally
+        {
+            Array.Clear(pfx, 0, pfx.Length);
+        }
     }
 }
