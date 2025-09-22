@@ -10,9 +10,11 @@ using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting.WindowsServices;
 using Serilog;
+using StaticFileServer;
 using System.IO.Compression;
 using System.Net;
 using System.Reflection;
+using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.RateLimiting;
 
@@ -85,28 +87,44 @@ try
         options.Limits.MaxRequestBodySize = 50 * 1024 * 1024;
         options.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(120);
 
-        if (useHttps && !string.IsNullOrWhiteSpace(crtPath) && !string.IsNullOrWhiteSpace(keyPath)
-            && File.Exists(crtPath) && File.Exists(keyPath))
-        {
-            var cert = X509Certificate2.CreateFromPemFile(crtPath, keyPath);
-            cert = new X509Certificate2(cert.Export(X509ContentType.Pfx));
+        X509Certificate2? cert = null;
+        var certOk = false;
 
+        if (useHttps)
+        {
+            try
+            {
+                // PFX作成を避けてエフェメラルにロードできる実装が望ましい
+                cert = CertificateExtensions.LoadEphemeralFromPem(crtPath!, keyPath!);
+                certOk = cert is not null;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Failed to load certificate from PEM.");
+            }
+        }
+
+        if (certOk && cert is not null)
+        {
+            // 公開はHTTPSのみ
             options.ListenAnyIP(httpsPort, listenOpts =>
             {
                 listenOpts.Protocols = HttpProtocols.Http1AndHttp2;
                 listenOpts.UseHttps(cert, https =>
                 {
-                    // 必要に応じて TLS バージョン/暗号スイートの制御を追加
+                    https.SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
+                    // 必要なら CipherSuitesPolicy/ClientCertificateMode 等もここで制御
                 });
             });
+
+            // ※ HTTP は開けない。80→443 へのリダイレクトが必要なら下記のように専用で開ける
+            // options.ListenAnyIP(hosting.HttpPort, o => o.Protocols = HttpProtocols.Http1);
+            // かつアプリ側で app.UseHttpsRedirection();
         }
         else
         {
-            // fallback to HTTP
-            options.ListenAnyIP(httpPort, o =>
-            {
-                o.Protocols = HttpProtocols.Http1AndHttp2;
-            });
+            // 開発などで HTTPS 使わない場合のみ HTTP
+            options.ListenAnyIP(httpPort, o => o.Protocols = HttpProtocols.Http1);
         }
     });
 
