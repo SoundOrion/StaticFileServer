@@ -153,9 +153,12 @@ try
             "application/wasm",
             "application/json",
             "application/xml",
+            "application/rss+xml",
+            "application/atom+xml",
             "text/plain",
             "text/css",
-            "application/javascript"
+            "application/javascript",         // 一部環境では明示が必要
+            "text/javascript"                 // 古い UA 向けの互換
         });
     });
     builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Optimal);
@@ -203,15 +206,15 @@ try
 
     builder.Services.AddAuthorization(options =>
     {
-        //// 既定は「認証必須」
-        //options.FallbackPolicy = new AuthorizationPolicyBuilder()
-        //    .RequireAuthenticatedUser()
-        //    .Build();
-
-        // 既定は「常に許可」
+        // 既定は「認証必須」
         options.FallbackPolicy = new AuthorizationPolicyBuilder()
-            .RequireAssertion(_ => true)
+            .RequireAuthenticatedUser()
             .Build();
+
+        //// 既定は「常に許可」
+        //options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        //    .RequireAssertion(_ => true)
+        //    .Build();
 
         // 匿名を許すポリシー（ヘルスチェック等で使用）
         options.AddPolicy("AllowAnonymous", p => p.RequireAssertion(_ => true));
