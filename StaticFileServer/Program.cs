@@ -114,6 +114,7 @@ try
             options.ListenAnyIP(hosting.HttpsPort, listenOpts =>
             {
                 listenOpts.Protocols = HttpProtocols.Http1AndHttp2;
+                //listenOpts.Protocols = HttpProtocols.Http1AndHttp2AndHttp3;
                 listenOpts.UseHttps(cert, https =>
                 {
                     https.SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
@@ -321,7 +322,10 @@ try
     });
 
     // HTTP ログ（必要なら）
-    app.UseHttpLogging();
+    if (app.Environment.IsDevelopment())
+    {
+        app.UseHttpLogging();
+    }
 
     // 圧縮
     app.UseResponseCompression();
@@ -346,11 +350,16 @@ try
     // セキュリティヘッダ付与
     static void AddSecurityHeaders(HttpContext ctx)
     {
-        ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
-        ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
-        ctx.Response.Headers["X-Frame-Options"] = "DENY";
-        // 必要に応じて CSP を設定（SPA/外部CDNに合わせて調整）
-        // ctx.Response.Headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self';";
+        var h = ctx.Response.Headers;
+        h["X-Content-Type-Options"] = "nosniff";
+        h["Referrer-Policy"] = "no-referrer";
+        h["X-Frame-Options"] = "DENY";
+        // 必要に応じて
+        // h["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self';";
+        //h["Cross-Origin-Opener-Policy"] = "same-origin";           // COOP
+        //h["Cross-Origin-Embedder-Policy"] = "require-corp";        // COEP（CDN資産には CORP/COEP対応が必要）
+        //h["Cross-Origin-Resource-Policy"] = "same-origin";
+        //h["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()";
     }
 
     // /assets は長期キャッシュ
