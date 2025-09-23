@@ -24,17 +24,9 @@ using System.Threading.RateLimiting;
 // 1) Serilog 初期化
 // ---------------------------
 Log.Logger = new LoggerConfiguration()
-    .Enrich.FromLogContext()
-    .Enrich.WithMachineName()
-    .Enrich.WithThreadId()
+    .MinimumLevel.Information()
     .WriteTo.Console()
-    .WriteTo.File(
-        Path.Combine(AppContext.BaseDirectory, "Logs", "app-.log"),
-        rollingInterval: RollingInterval.Day,
-        retainedFileCountLimit: 14,
-        shared: true
-    )
-    .CreateLogger();
+    .CreateBootstrapLogger();
 
 try
 {
