@@ -48,13 +48,25 @@ try
     );
 
     // ---------------------------
-    // 2) 設定読み込み
+    // 2) 設定（Options）バインド + 検証 + 起動時チェック
     // ---------------------------
-    var useHttps = builder.Configuration.GetValue("Hosting:UseHttps", false);
-    var httpPort = builder.Configuration.GetValue("Hosting:HttpPort", 8080);
-    var httpsPort = builder.Configuration.GetValue("Hosting:HttpsPort", 8443);
-    var crtPath = builder.Configuration.GetValue<string>("Hosting:Certificate:CrtPath");
-    var keyPath = builder.Configuration.GetValue<string>("Hosting:Certificate:KeyPath");
+    builder.Services.AddOptions<HostingOptions>()
+        .Bind(builder.Configuration.GetSection("Hosting"))
+        .ValidateDataAnnotations()
+        .Validate(o =>
+        {
+            if (o.UseHttps)
+            {
+                return !string.IsNullOrWhiteSpace(o.Certificate.CrtPath)
+                    && !string.IsNullOrWhiteSpace(o.Certificate.KeyPath);
+            }
+            return true;
+        }, failureMessage: "UseHttps=true の場合は Certificate.CrtPath/KeyPath を設定してください。")
+        .ValidateOnStart();
+
+    // Program 内で使う用に取り出し（他で使うなら IOptions/Monitor をDI）
+    var hosting = builder.Configuration.GetSection("Hosting").Get<HostingOptions>()
+                  ?? throw new InvalidOperationException("Hosting options not bound.");
 
     // Windows サービス対応
     if (WindowsServiceHelpers.IsWindowsService())
@@ -82,12 +94,12 @@ try
         X509Certificate2? cert = null;
         var certOk = false;
 
-        if (useHttps)
+        if (hosting.UseHttps)
         {
             try
             {
                 // PFX作成を避けてエフェメラルにロードできる実装が望ましい
-                cert = CertificateExtensions.LoadEphemeralFromPem(crtPath!, keyPath!);
+                cert = CertificateExtensions.LoadEphemeralFromPem(hosting.Certificate.CrtPath!, hosting.Certificate.KeyPath!);
                 certOk = cert is not null;
             }
             catch (Exception ex)
@@ -99,7 +111,7 @@ try
         if (certOk && cert is not null)
         {
             // 公開はHTTPSのみ
-            options.ListenAnyIP(httpsPort, listenOpts =>
+            options.ListenAnyIP(hosting.HttpsPort, listenOpts =>
             {
                 listenOpts.Protocols = HttpProtocols.Http1AndHttp2;
                 listenOpts.UseHttps(cert, https =>
@@ -116,7 +128,7 @@ try
         else
         {
             // 開発などで HTTPS 使わない場合のみ HTTP
-            options.ListenAnyIP(httpPort, o => o.Protocols = HttpProtocols.Http1);
+            options.ListenAnyIP(hosting.HttpPort, o => o.Protocols = HttpProtocols.Http1);
         }
     });
 
@@ -262,7 +274,7 @@ try
     app.UseForwardedHeaders();
 
     // HSTS/HTTPS リダイレクト（本番かつ HTTPS 有効時）
-    if (!app.Environment.IsDevelopment() && useHttps)
+    if (!app.Environment.IsDevelopment() && hosting.UseHttps)
     {
         app.UseHsts();
         app.UseHttpsRedirection();
@@ -425,13 +437,18 @@ try
         }
 
         // 証明書有効期限（useHttps 時のみ）
-        if (useHttps && !string.IsNullOrWhiteSpace(crtPath) && !string.IsNullOrWhiteSpace(keyPath)
-            && File.Exists(crtPath) && File.Exists(keyPath))
+        if (hosting.UseHttps
+            && !string.IsNullOrWhiteSpace(hosting.Certificate.CrtPath)
+            && !string.IsNullOrWhiteSpace(hosting.Certificate.KeyPath)
+            && File.Exists(hosting.Certificate.CrtPath)
+            && File.Exists(hosting.Certificate.KeyPath))
         {
             try
             {
                 using var c = new X509Certificate2(
-                    X509Certificate2.CreateFromPemFile(crtPath, keyPath).Export(X509ContentType.Pfx)
+                    X509Certificate2.CreateFromPemFile(
+                        hosting.Certificate.CrtPath, hosting.Certificate.KeyPath
+                    ).Export(X509ContentType.Pfx)
                 );
                 checks["certNotExpired"] = c.NotAfter > DateTime.UtcNow;
                 checks["certDaysLeft"] = Math.Max(0, (int)(c.NotAfter - DateTime.UtcNow).TotalDays);
