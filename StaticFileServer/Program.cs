@@ -12,13 +12,12 @@ using Microsoft.Extensions.Hosting.WindowsServices;
 using Serilog;
 using StaticFileServer;
 using System.IO.Compression;
-using System.Net;
 using System.Reflection;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.RateLimiting;
-
-#pragma warning disable ASP0000
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 
 // ---------------------------
 // 1) Serilog 初期化
@@ -191,15 +190,18 @@ try
     {
         o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
         o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
-            RateLimitPartition.GetFixedWindowLimiter(
-                ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-                _ => new FixedWindowRateLimiterOptions
-                {
-                    PermitLimit = 100,
-                    Window = TimeSpan.FromMinutes(1),
-                    QueueLimit = 0,
-                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst
-                }));
+        {
+            var key = (ctx.User?.Identity?.IsAuthenticated == true)
+                ? $"user:{ctx.User.Identity!.Name}"
+                : $"ip:{ctx.Connection.RemoteIpAddress}";
+            return RateLimitPartition.GetFixedWindowLimiter(key, _ => new()
+            {
+                PermitLimit = 100,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                QueueProcessingOrder = QueueProcessingOrder.OldestFirst
+            });
+        });
     });
 
     // ---------------------------
@@ -225,10 +227,67 @@ try
         options.AddPolicy("AllowAnonymous", p => p.RequireAssertion(_ => true));
     });
 
+    var hc = builder.Services.AddHealthChecks()
+        .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "liveness" })
+        .AddCheck("staticFiles", () =>
+        {
+            var ok = Directory.Exists(Path.Combine(AppContext.BaseDirectory, "build"));
+            return ok ? HealthCheckResult.Healthy() : HealthCheckResult.Unhealthy("build missing");
+        }, tags: new[] { "readiness" })
+        .AddCheck("logWritable", () =>
+        {
+            try
+            {
+                var logDir = Path.Combine(AppContext.BaseDirectory, "Logs");
+                Directory.CreateDirectory(logDir);
+                var p = Path.Combine(logDir, "write-test.txt");
+                File.WriteAllText(p, DateTime.UtcNow.ToString("O"));
+                File.Delete(p);
+                return HealthCheckResult.Healthy();
+            }
+            catch (Exception ex)
+            {
+                return HealthCheckResult.Unhealthy("log not writable", ex);
+            }
+        }, tags: new[] { "readiness" });
+
+    if (hosting.UseHttps)
+    {
+        hc.AddCheck("tlsCert", () =>
+        {
+            try
+            {
+                var crt = hosting.Certificate.CrtPath;
+                var key = hosting.Certificate.KeyPath;
+                if (string.IsNullOrWhiteSpace(crt) || string.IsNullOrWhiteSpace(key)
+                    || !File.Exists(crt) || !File.Exists(key))
+                    return HealthCheckResult.Degraded("cert files missing");
+
+                using var c = new X509Certificate2(
+                    X509Certificate2.CreateFromPemFile(crt, key).Export(X509ContentType.Pfx));
+                var daysLeft = (int)(c.NotAfter - DateTime.UtcNow).TotalDays;
+                var data = new Dictionary<string, object> { ["notAfter"] = c.NotAfter, ["daysLeft"] = daysLeft };
+                if (daysLeft < 7) return HealthCheckResult.Unhealthy("certificate expires <7d", data: data);
+                if (daysLeft < 30) return HealthCheckResult.Degraded("certificate expires <30d", data: data);
+                return HealthCheckResult.Healthy("certificate ok", data);
+            }
+            catch (Exception ex)
+            {
+                return HealthCheckResult.Unhealthy("certificate check failed", ex);
+            }
+        }, tags: new[] { "readiness" });
+    }
+
     var app = builder.Build();
 
     // ---------------------------
-    // 10) 例外ハンドラ（最上流）
+    // 10) 静的ファイル設定
+    // ---------------------------
+    var distPath = Path.Combine(AppContext.BaseDirectory, "build");
+    var provider = new PhysicalFileProvider(distPath);
+
+    // ---------------------------
+    // 11) 例外ハンドラ（最上流）
     // ---------------------------
     app.UseExceptionHandler(errorApp =>
     {
@@ -248,8 +307,7 @@ try
             var wantsHtml = accept?.Any(a => a.MediaType.HasValue &&
                          a.MediaType.Value.Contains("text/html", StringComparison.OrdinalIgnoreCase)) == true;
 
-            var distPathLocal = Path.Combine(AppContext.BaseDirectory, "build");
-            var errorHtml = Path.Combine(distPathLocal, "500.html");
+            var errorHtml = Path.Combine(distPath, "500.html");
 
             if (wantsHtml && File.Exists(errorHtml))
             {
@@ -274,6 +332,31 @@ try
     // 逆プロキシヘッダ適用
     app.UseForwardedHeaders();
 
+    app.Use((ctx, next) =>
+    {
+        var requestId = System.Diagnostics.Activity.Current?.Id ?? ctx.TraceIdentifier;
+
+        // 上流(LB/NGINX等)が付けたIDがあれば尊重
+        if (ctx.Request.Headers.TryGetValue("X-Request-ID", out var incoming) &&
+            !string.IsNullOrWhiteSpace(incoming))
+        {
+            requestId = incoming.ToString();
+        }
+
+        // 下流（Serilog など）で参照したい場合
+        ctx.Items["RequestId"] = requestId;
+
+        // レスポンス送出直前に必ず付与（既に始まっていてもOK）
+        ctx.Response.OnStarting(() =>
+        {
+            if (!ctx.Response.Headers.ContainsKey("X-Request-ID"))
+                ctx.Response.Headers["X-Request-ID"] = requestId;
+            return Task.CompletedTask;
+        });
+
+        return next();
+    });
+
     // HSTS/HTTPS リダイレクト（本番かつ HTTPS 有効時）
     if (!app.Environment.IsDevelopment() && hosting.UseHttps)
     {
@@ -282,13 +365,13 @@ try
     }
 
     // ---------------------------
-    // 11) 認証/認可（ユーザー名をログに入れるため Serilog より前に）
+    // 12) 認証/認可（ユーザー名をログに入れるため Serilog より前に）
     // ---------------------------
     app.UseAuthentication();
     app.UseAuthorization();
 
     // ---------------------------
-    // 12) Serilog リクエストログ（処理時間など）
+    // 13) Serilog リクエストログ（処理時間など）
     // ---------------------------
     app.UseSerilogRequestLogging(opts =>
     {
@@ -305,17 +388,22 @@ try
         };
 
         opts.MessageTemplate =
-            "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms from {RemoteIpAddress} (User={UserName})";
+        "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms from {RemoteIpAddress} (User={UserName}) RequestId={RequestId}";
 
-        // ユーザー名/クライアント IP をログに埋め込む
         opts.EnrichDiagnosticContext = (diagCtx, httpCtx) =>
         {
+            // さきほど ctx.Items に入れたIDをログにも出す
+            var rid = httpCtx.Items.TryGetValue("RequestId", out var v) ? v?.ToString()
+                     : System.Diagnostics.Activity.Current?.Id ?? httpCtx.TraceIdentifier;
+            diagCtx.Set("RequestId", rid);
+
+            // 既存の埋め込みもそのまま
             var ip = httpCtx.Connection.RemoteIpAddress;
             if (ip?.IsIPv4MappedToIPv6 == true) ip = ip.MapToIPv4();
             diagCtx.Set("RemoteIpAddress", ip?.ToString());
 
             var userName = (httpCtx.User?.Identity?.IsAuthenticated == true)
-                ? httpCtx.User!.Identity!.Name // 例: "CORP\\yamada"
+                ? httpCtx.User!.Identity!.Name
                 : "anonymous";
             diagCtx.Set("UserName", userName);
         };
@@ -333,19 +421,13 @@ try
     // レート制限
     app.UseRateLimiter();
 
-    // ---------------------------
-    // 13) 静的ファイル設定
-    // ---------------------------
-    var distPath = Path.Combine(AppContext.BaseDirectory, "build");
-    var provider = new PhysicalFileProvider(distPath);
-
     // MIME 拡張
     var contentTypeProvider = new FileExtensionContentTypeProvider();
     contentTypeProvider.Mappings[".wasm"] = "application/wasm";
     contentTypeProvider.Mappings[".txt"] = "text/plain; charset=utf-8";
     contentTypeProvider.Mappings[".log"] = "text/plain; charset=utf-8";
     contentTypeProvider.Mappings[".csv"] = "text/csv; charset=utf-8";
-    contentTypeProvider.Mappings[".json"] = "application/json; charset=utf-8";
+    //contentTypeProvider.Mappings[".json"] = "application/json; charset=utf-8";
 
     // セキュリティヘッダ付与
     static void AddSecurityHeaders(HttpContext ctx)
@@ -414,81 +496,25 @@ try
     // ---------------------------
     // 15) ヘルス/レディネス（匿名許可）
     // ---------------------------
-    app.MapGet("/healthz", [AllowAnonymous] () =>
+    // liveness: "self" だけを見る（常に 200）
+    app.MapHealthChecks("/healthz", new HealthCheckOptions
     {
-        return Results.Ok(new
-        {
-            status = "ok",
-            timestamp = DateTimeOffset.UtcNow
-        });
-    }).RequireAuthorization("AllowAnonymous");
+        Predicate = r => r.Tags.Contains("liveness"),
+        ResponseWriter = WriteHealthJson
+    }).AllowAnonymous();
 
-    app.MapGet("/readyz", [AllowAnonymous] () =>
+    // readiness: 依存の健全性を見る（Degraded/Unhealthy は 503）
+    app.MapHealthChecks("/readyz", new HealthCheckOptions
     {
-        var checks = new Dictionary<string, object>();
-
-        // 静的ファイルフォルダの存在
-        var distPathLocal = Path.Combine(AppContext.BaseDirectory, "build");
-        checks["staticFiles"] = Directory.Exists(distPathLocal);
-
-        // Logs フォルダ書込可
-        try
-        {
-            var logPath = Path.Combine(AppContext.BaseDirectory, "Logs", "write-test.txt");
-            Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
-            File.WriteAllText(logPath, DateTime.UtcNow.ToString("O"));
-            File.Delete(logPath);
-            checks["logWritable"] = true;
-        }
-        catch
-        {
-            checks["logWritable"] = false;
-        }
-
-        // 証明書有効期限（useHttps 時のみ）
-        if (hosting.UseHttps
-            && !string.IsNullOrWhiteSpace(hosting.Certificate.CrtPath)
-            && !string.IsNullOrWhiteSpace(hosting.Certificate.KeyPath)
-            && File.Exists(hosting.Certificate.CrtPath)
-            && File.Exists(hosting.Certificate.KeyPath))
-        {
-            try
-            {
-                using var c = new X509Certificate2(
-                    X509Certificate2.CreateFromPemFile(
-                        hosting.Certificate.CrtPath, hosting.Certificate.KeyPath
-                    ).Export(X509ContentType.Pfx)
-                );
-                checks["certNotExpired"] = c.NotAfter > DateTime.UtcNow;
-                checks["certDaysLeft"] = Math.Max(0, (int)(c.NotAfter - DateTime.UtcNow).TotalDays);
-            }
-            catch
-            {
-                checks["certNotExpired"] = false;
-            }
-        }
-
-        var allOk = checks.Values.All(v => v is bool b && b);
-
-        if (allOk)
-        {
-            return Results.Ok(new
-            {
-                status = "ready",
-                timestamp = DateTimeOffset.UtcNow,
-                checks
-            });
-        }
-        else
-        {
-            return Results.Json(new
-            {
-                status = "not-ready",
-                timestamp = DateTimeOffset.UtcNow,
-                checks
-            }, statusCode: StatusCodes.Status503ServiceUnavailable);
-        }
-    }).RequireAuthorization("AllowAnonymous");
+        Predicate = r => r.Tags.Contains("readiness"),
+        ResultStatusCodes =
+    {
+        [HealthStatus.Healthy]   = StatusCodes.Status200OK,
+        [HealthStatus.Degraded]  = StatusCodes.Status503ServiceUnavailable,
+        [HealthStatus.Unhealthy] = StatusCodes.Status503ServiceUnavailable
+    },
+        ResponseWriter = WriteHealthJson
+    }).AllowAnonymous();
 
     // 任意：バージョン表示（デプロイ確認に）
     app.MapGet("/version", () =>
@@ -509,4 +535,27 @@ catch (Exception ex)
 finally
 {
     Log.CloseAndFlush();
+}
+
+
+static Task WriteHealthJson(HttpContext ctx, HealthReport report)
+{
+    ctx.Response.ContentType = "application/json; charset=utf-8";
+    ctx.Response.Headers["Cache-Control"] = "no-store";
+    var body = new
+    {
+        status = report.Status.ToString(),
+        durationMs = report.TotalDuration.TotalMilliseconds,
+        checks = report.Entries.ToDictionary(
+            e => e.Key,
+            e => new
+            {
+                status = e.Value.Status.ToString(),
+                description = e.Value.Description,
+                durationMs = e.Value.Duration.TotalMilliseconds,
+                data = e.Value.Data, // daysLeft 等
+                error = e.Value.Exception?.Message
+            })
+    };
+    return ctx.Response.WriteAsJsonAsync(body);
 }
